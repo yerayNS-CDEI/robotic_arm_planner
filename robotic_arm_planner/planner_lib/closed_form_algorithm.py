@@ -1,22 +1,42 @@
 import numpy as np
 
 def closed_form_algorithm(goal_matrix, q_current, type):
-    # Link length UR5
-    L1, L2, L3, L4 = 0.0892, 0.1359, 0.4250, 0.1197
-    L5, L6, L7, L8 = 0.3923, 0.0930, 0.0947, 0.0823
+    # # Link length UR5
+    # L1, L2, L3, L4 = 0.0892, 0.1359, 0.4250, 0.1197
+    # L5, L6, L7, L8 = 0.3923, 0.0930, 0.0947, 0.0823
     
+    # # d
+    # vd1 = L1
+    # vd2 = 0
+    # vd3 = 0
+    # vd4 = L2 - L4 + L6
+    # vd5 = L7
+    # vd6 = L8
+    
+    # # a
+    # va1 = 0
+    # va2 = -L3
+    # va3 = -L5
+    # va4 = 0
+    # va5 = 0
+    # va6 = 0
+
+    # # Link length UR10e
+    # L1, L2, L3, L4 = 
+    # L5, L6, L7, L8 = 
+
     # d
-    vd1 = L1
+    vd1 = 0.1807
     vd2 = 0
     vd3 = 0
-    vd4 = L2 - L4 + L6
-    vd5 = L7
-    vd6 = L8
+    vd4 = 0.17415
+    vd5 = 0.11985
+    vd6 = 0.11655
     
     # a
     va1 = 0
-    va2 = -L3
-    va3 = -L5
+    va2 = -0.6127
+    va3 = -0.57155
     va4 = 0
     va5 = 0
     va6 = 0
@@ -136,7 +156,7 @@ def closed_form_algorithm(goal_matrix, q_current, type):
                 sol[i, 3] = q4_i
 
         ### Step 6 - Solution with the minimal difference with respect to the current joint positions.
-        print("Solutions found are: \n",sol)
+        # print("Solutions found are: \n",sol)
         weights = np.ones(6)
         # diffs = np.array([np.sqrt(np.sum(weights * np.abs(q_current - sol[i]))) if not np.isnan(sol[i, 0]) else np.inf for i in range(8)])
         # idx = np.argmin(diffs)

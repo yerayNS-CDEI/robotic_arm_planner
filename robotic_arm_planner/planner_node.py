@@ -1,6 +1,7 @@
 import rclpy
 from rclpy.node import Node
 import time
+import os
 
 from geometry_msgs.msg import Pose
 from sensor_msgs.msg import JointState
@@ -22,13 +23,31 @@ class PlannerNode(Node):
         # --- Parameters for the grid / reachability ---
         self.robot_name = 'ur10e'
         self.filename = "reachability_map_27_fused"
+        fn_npy = f"{self.filename}.npy"
         self.grid_size = int(self.filename.split('_')[2])
+        base_home = os.path.expanduser('~')
+        self.reachability_map_fn = os.path.join(
+            base_home,
+            'ws_reachability',
+            'rm4d',
+            'experiment_scripts',
+            'data',
+            f'eval_poses_{self.robot_name}',
+            fn_npy
+        )
+        self.get_logger().info(f"Loading reachability map from: {self.reachability_map_fn}")
+        self.reachability_map = np.load(self.reachability_map_fn, allow_pickle=True).item()
         self.radius = 1.35  # For UR10e
 
         # Create grid space
-        self.x_vals = np.linspace(-self.radius, self.radius, self.grid_size)
-        self.y_vals = np.linspace(-self.radius, self.radius, self.grid_size)
-        self.z_vals = np.linspace(0.0, 1.5, self.grid_size)
+        self.resolution = 2*self.radius / self.grid_size
+        self.x_vals = np.linspace(-self.radius + (self.resolution / 2), self.radius - (self.resolution / 2), self.grid_size)
+        self.y_vals = self.x_vals
+        self.z_levels = sorted(self.reachability_map.keys())
+        self.grid_shape = (self.grid_size, self.grid_size, len(self.z_levels))
+        z_min = min(self.z_levels)
+        z_max = max(self.z_levels)
+        self.z_vals = np.linspace(z_min, z_max, len(self.z_levels))  # assumes uniform spacing
 
         # Create subscriber and publishers
         self.create_subscription(Pose, '/goal_pose', self.goal_callback, 10)
@@ -54,7 +73,7 @@ class PlannerNode(Node):
             self.status_pub.publish(Bool(data=False))
             return
 
-        # Dummy occupancy grid: all free (for now)
+        # Occupancy grid: all free (for now)
         occupancy = np.zeros((self.grid_size, self.grid_size, self.grid_size), dtype=np.uint8)
 
         path = find_path(occupancy, start_idx, goal_idx)
@@ -85,6 +104,10 @@ class PlannerNode(Node):
             q_new = closed_form_algorithm(T, q_current, type=0)
             all_joint_values.append(q_new)
             q_current = q_new
+            if np.any(np.isnan(q_new)):
+
+                self.get_logger().error(f"Invalid IK at step {i}: pose = {T[:3, 3]}. Path wolrd = {path_world[i]}")
+
 
         # Publish joint values step-by-step
         for i, q in enumerate(all_joint_values):
