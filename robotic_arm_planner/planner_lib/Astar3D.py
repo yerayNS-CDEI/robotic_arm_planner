@@ -6,6 +6,17 @@ from math import sqrt
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
+from scipy.ndimage import binary_dilation
+
+def dilate_obstacles(occupancy_grid, dilation_distance, x_vals):
+    # Create a structuring element for dilation (3D cube of size dilation_distance)
+    dilation_size = int(np.ceil(dilation_distance / (x_vals[1] - x_vals[0])))  # Convert distance to grid units
+    struct_element = np.ones((dilation_size, dilation_size, dilation_size), dtype=np.uint8)
+    
+    # Perform 3D dilation
+    dilated_grid = binary_dilation(occupancy_grid, structure=struct_element).astype(np.uint8)
+    return dilated_grid
+
 def world_to_grid(x, y, z, x_vals, y_vals, z_vals):
     """
     Converts real-world coordinates (like x = 0.35, y = -0.62) into 

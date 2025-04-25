@@ -24,7 +24,7 @@ sys.path.append(root_dir)
 
 from Astar3D import find_path, visualize_path, custom_format
 
-def dilate_obstacles(occupancy_grid, dilation_distance, grid_size):
+def dilate_obstacles(occupancy_grid, dilation_distance, x_vals):
     # Create a structuring element for dilation (3D cube of size dilation_distance)
     dilation_size = int(np.ceil(dilation_distance / (x_vals[1] - x_vals[0])))  # Convert distance to grid units
     struct_element = np.ones((dilation_size, dilation_size, dilation_size), dtype=np.uint8)
