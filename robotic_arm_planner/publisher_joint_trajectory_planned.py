@@ -36,7 +36,7 @@ class PublisherJointTrajectory(Node):
         self.declare_parameter("wait_sec_between_publish", 6)
         self.declare_parameter("goal_names", ["pos1", "pos2"])
         self.declare_parameter("joints", [""])
-        self.declare_parameter("check_starting_point", False)
+        self.declare_parameter("check_starting_point", True)
 
         # Read parameters
         controller_name = self.get_parameter("controller_name").value
@@ -63,6 +63,10 @@ class PublisherJointTrajectory(Node):
             self.joint_state_sub = self.create_subscription(
                 JointState, "joint_states", self.joint_state_callback, 10
             )
+            self.joint_path_sub = self.create_subscription(
+                JointState, "/planned_joint_states", self.joint_path_callback, 10
+            )
+
         # initialize starting point status
         self.starting_point_ok = not self.check_starting_point
 
@@ -208,7 +212,9 @@ class PublisherJointTrajectory(Node):
             self.joint_state_msg_received = True
         else:
             return
-
+        
+    def joint_path_callback(self, msg):
+        return
 
 def main(args=None):
     rclpy.init(args=args)
