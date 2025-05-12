@@ -8,6 +8,7 @@ import os
 from geometry_msgs.msg import Pose
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 import numpy as np
 
@@ -41,6 +42,8 @@ class PlannerNode(Node):
         self.reachability_map = np.load(self.reachability_map_fn, allow_pickle=True).item()
         self.radius = 1.35  # For UR10e (hardcoded!!)
 
+        self.current_joint_state = None
+
         # Create grid space
         self.resolution = 2*self.radius / self.grid_size
         self.x_vals = np.linspace(-self.radius + (self.resolution / 2), self.radius - (self.resolution / 2), self.grid_size)
@@ -53,19 +56,26 @@ class PlannerNode(Node):
 
         # Create subscriber and publishers
         self.create_subscription(Pose, '/goal_pose', self.goal_callback, 10)
+        self.create_subscription(JointState, "/joint_states", self.joint_state_callback, 10)
         self.joint_pub = self.create_publisher(JointState, '/planned_joint_states', 10)
         self.status_pub = self.create_publisher(Bool, '/planner_success', 10)
+        self.trajectory_pub = self.create_publisher(JointTrajectory, '/planned_trajectory', 10)
 
         self.get_logger().info("Planner node initialized and waiting for goal poses...")
 
+    def joint_state_callback(self, msg):
+        self.current_joint_state = msg
+
     def goal_callback(self, msg: Pose):
         goal_pos = [msg.position.x, msg.position.y, msg.position.z]
+        goal_orn = [msg.orientation.x,msg.orientation.y,msg.orientation.z,msg.orientation.w]
         self.get_logger().info(f"Received goal pose: {goal_pos}")
 
         # Example start position (NEEDS TO be parameterized)
         start_pos = [-0.25, 0.6, 0.2]
         start_orientation = R.from_euler('xyz', [60, 120, 150], degrees=True)
-        goal_orientation = R.from_euler('xyz', [0, -90, 0], degrees=True)
+        # goal_orientation = R.from_euler('xyz', [0, -90, 0], degrees=True)
+        goal_orientation = R.from_quat(goal_orn)
 
         try:
             start_idx = world_to_grid(*start_pos, self.x_vals, self.y_vals, self.z_vals)
@@ -148,7 +158,7 @@ class PlannerNode(Node):
 
                 self.get_logger().error(f"Invalid IK at step {i}: pose = {T[:3, 3]}. Path wolrd = {path_world[i]}")
 
-        # Publish joint values step-by-step
+        # Publish joint values step-by-step (POSIBLE ELIMINACION DE CODIGO PARA COMPACTACION)
         for i, q in enumerate(all_joint_values):
             msg = JointState()
             msg.name = [f'joint_{j+1}' for j in range(len(q))]
@@ -161,6 +171,36 @@ class PlannerNode(Node):
         # Publish success
         self.status_pub.publish(Bool(data=True))
         self.get_logger().info("Joint planning complete and published.")
+
+        # Publish trajectory
+        traj_msg = JointTrajectory()
+        traj_msg.joint_names = [
+            'shoulder_pan_joint',
+            'shoulder_lift_joint',
+            'elbow_joint',
+            'wrist_1_joint',
+            'wrist_2_joint',
+            'wrist_3_joint'
+        ]
+
+        if self.current_joint_state is not None:
+            first_point = JointTrajectoryPoint()
+            first_point.positions = list(self.current_joint_state.position)
+            first_point.time_from_start = rclpy.duration.Duration(seconds=0.1).to_msg()
+            traj_msg.points.append(first_point)
+
+        time_from_start = 1.0  # el primer punto ya es 0.1, así que empieza desde 1.0
+
+        for q in all_joint_values:
+            point = JointTrajectoryPoint()
+            point.positions = q.tolist()
+            point.time_from_start.sec = int(time_from_start)
+            point.time_from_start.nanosec = int((time_from_start % 1.0) * 1e9)
+            traj_msg.points.append(point)
+            time_from_start += 1
+
+        self.trajectory_pub.publish(traj_msg)
+        self.get_logger().info("Published planned trajectory.")
 
 def create_pose_matrix(position, rotation_matrix):
     """Helper to create 4x4 transformation matrix from position and rotation matrix."""
