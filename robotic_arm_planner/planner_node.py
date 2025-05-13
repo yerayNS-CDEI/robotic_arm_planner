@@ -42,7 +42,10 @@ class PlannerNode(Node):
         self.reachability_map = np.load(self.reachability_map_fn, allow_pickle=True).item()
         self.radius = 1.35  # For UR10e (hardcoded!!)
 
+        self.execution_complete = True
+        self.goal_queue = []
         self.current_joint_state = None
+        self.emergency_stop = False
 
         # Create grid space
         self.resolution = 2*self.radius / self.grid_size
@@ -57,8 +60,8 @@ class PlannerNode(Node):
         # Create subscriber and publishers
         self.create_subscription(Pose, '/goal_pose', self.goal_callback, 10)
         self.create_subscription(JointState, "/joint_states", self.joint_state_callback, 10)
+        self.create_subscription(Bool, "/execution_status", self.execution_status_callback, 10)  # Nueva suscripción
         self.joint_pub = self.create_publisher(JointState, '/planned_joint_states', 10)
-        self.status_pub = self.create_publisher(Bool, '/planner_success', 10)
         self.trajectory_pub = self.create_publisher(JointTrajectory, '/planned_trajectory', 10)
 
         self.get_logger().info("Planner node initialized and waiting for goal poses...")
@@ -66,23 +69,57 @@ class PlannerNode(Node):
     def joint_state_callback(self, msg):
         self.current_joint_state = msg
 
+    def execution_status_callback(self, msg: Bool):
+        """Callback que recibe el estado de ejecución"""
+        self.execution_complete = msg.data
+        if self.execution_complete:
+            self.get_logger().info("Goal execution complete. Ready for new goal.")
+            if self.goal_queue:
+                next_goal = self.goal_queue.pop(0)
+                self.get_logger().info("Executing next goal in queue.")
+                self.execution_complete = True
+                self.plan_and_send_trajectory(next_goal)
+
     def goal_callback(self, msg: Pose):
+        if not self.execution_complete:
+            self.get_logger().warn("Previous trajectory not finished. Goal queued.")
+            self.goal_queue.append(msg)
+            return
+
+        self.execution_complete = False
+        self.plan_and_send_trajectory(msg)
+
+    def plan_and_send_trajectory(self, msg: Pose):
+        if self.emergency_stop:
+            self.get_logger().warn("Emergency stop is active, aborting trajectory planning.")
+            return  # Abortamos la planificación si está en estado de emergencia
+
+        if self.current_joint_state is None:
+            self.get_logger().error("No current joint state received yet. Cannot calculate trajectory.")
+            return
+        
+        # Goal definition
         goal_pos = [msg.position.x, msg.position.y, msg.position.z]
         goal_orn = [msg.orientation.x,msg.orientation.y,msg.orientation.z,msg.orientation.w]
+        goal_orientation = R.from_quat(goal_orn)
+        # goal_orientation = R.from_euler('xyz', [0, -90, 0], degrees=True)
         self.get_logger().info(f"Received goal pose: {goal_pos}")
 
         # Example start position (NEEDS TO be parameterized)
-        start_pos = [-0.25, 0.6, 0.2]
-        start_orientation = R.from_euler('xyz', [60, 120, 150], degrees=True)
-        # goal_orientation = R.from_euler('xyz', [0, -90, 0], degrees=True)
-        goal_orientation = R.from_quat(goal_orn)
-
+        if True:
+            start_pos = [-0.25, 0.6, 0.2]
+            start_orientation = R.from_euler('xyz', [60, 120, 150], degrees=True)
+        else:
+            # Obtenemos la posición actual del robot desde JointState
+            start_pos = list(self.current_joint_state.position)
+            start_orn = list(self.current_joint_state.orientation)
+            start_orientation = R.from_quat(start_orn)
+            
         try:
             start_idx = world_to_grid(*start_pos, self.x_vals, self.y_vals, self.z_vals)
             goal_idx = world_to_grid(*goal_pos, self.x_vals, self.y_vals, self.z_vals)
         except Exception as e:
             self.get_logger().error(f"Failed to convert world to grid: {e}")
-            self.status_pub.publish(Bool(data=False))
             return
 
         # Occupancy grid: all free (NEEDS TO be parameterized)
@@ -125,7 +162,6 @@ class PlannerNode(Node):
         path = find_path(occupancy_grid_dilated, start_idx, goal_idx)
         if not path:
             self.get_logger().warn("No path found!")
-            self.status_pub.publish(Bool(data=False))
             return
 
         # Convert path to world coordinates
@@ -155,8 +191,8 @@ class PlannerNode(Node):
             all_joint_values.append(q_new)
             q_current = q_new
             if np.any(np.isnan(q_new)):
-
                 self.get_logger().error(f"Invalid IK at step {i}: pose = {T[:3, 3]}. Path wolrd = {path_world[i]}")
+                self.emergency_stop = True 
 
         # Publish joint values step-by-step (POSIBLE ELIMINACION DE CODIGO PARA COMPACTACION)
         for i, q in enumerate(all_joint_values):
@@ -169,9 +205,12 @@ class PlannerNode(Node):
             time.sleep(0.1)  # 10 Hz
 
         # Publish success
-        self.status_pub.publish(Bool(data=True))
-        self.get_logger().info("Joint planning complete and published.")
-
+        self.get_logger().info("Joint planning published.")
+                
+        if self.emergency_stop:  # Verifica si se ha activado la parada de emergencia
+            self.get_logger().warn("Emergency stop is active. Halting trajectory.")
+            return
+        
         # Publish trajectory
         traj_msg = JointTrajectory()
         traj_msg.joint_names = [
@@ -189,7 +228,7 @@ class PlannerNode(Node):
             first_point.time_from_start = rclpy.duration.Duration(seconds=0.1).to_msg()
             traj_msg.points.append(first_point)
 
-        time_from_start = 1.0  # el primer punto ya es 0.1, así que empieza desde 1.0
+        time_from_start = 5.0  # el primer punto ya es 0.1, así que empieza desde 1.0
 
         for q in all_joint_values:
             point = JointTrajectoryPoint()
@@ -221,3 +260,188 @@ def main(args=None):
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# #!/usr/bin/env python3
+
+# import rclpy
+# from rclpy.node import Node
+# from control_msgs.action import FollowJointTrajectory
+# from rclpy.action import ActionServer
+# from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+# from sensor_msgs.msg import JointState
+# from std_msgs.msg import Bool
+# from geometry_msgs.msg import Pose
+# from scipy.spatial.transform import Rotation as R
+# import numpy as np
+# import time
+
+# # Importar las funciones de planificación y cinemática
+# from robotic_arm_planner.planner_lib.Astar3D import find_path, world_to_grid, grid_to_world, dilate_obstacles
+# from robotic_arm_planner.planner_lib.closed_form_algorithm import closed_form_algorithm
+
+# class PlannerNode(Node):
+#     def __init__(self):
+#         super().__init__('planner_node')
+
+#         # Crear el Action Server
+#         self._action_server = ActionServer(
+#             self,
+#             FollowJointTrajectory,
+#             'follow_joint_trajectory',
+#             self.execute_trajectory
+#         )
+
+#         # Inicializar la ejecución
+#         self.execution_complete = False
+#         self.goal_queue = []
+#         self.current_joint_state = None
+#         self.emergency_stop = False
+
+#         # Suscribirse a los temas de la meta (goal) en formato Pose
+#         self.create_subscription(Pose, "/goal_pose", self.goal_callback, 10)
+
+#         # Publicar la trayectoria y las posiciones de las juntas
+#         self.joint_pub = self.create_publisher(JointState, '/planned_joint_states', 10)
+#         self.trajectory_pub = self.create_publisher(JointTrajectory, '/planned_trajectory', 10)
+
+#         self.get_logger().info("Planner node initialized and waiting for goal poses...")
+
+#     def goal_callback(self, msg: Pose):
+#         """Callback para recibir goals en formato Pose"""
+#         self.get_logger().info(f"Received goal pose: {msg}")
+#         self.plan_and_send_trajectory(msg)
+
+#     def plan_and_send_trajectory(self, msg: Pose):
+#         """Recibe una goal en formato Pose y planifica la trayectoria"""
+#         if self.emergency_stop:
+#             self.get_logger().warn("Emergency stop is active, aborting trajectory planning.")
+#             return  # Abortamos la planificación si está en estado de emergencia
+
+#         # Obtener la posición y orientación del goal
+#         goal_pos = [msg.position.x, msg.position.y, msg.position.z]
+#         goal_orn = [msg.orientation.x, msg.orientation.y, msg.orientation.z, msg.orientation.w]
+#         goal_orientation = R.from_quat(goal_orn)
+
+#         # Obtener el estado actual del robot (posición y orientación)
+#         if self.current_joint_state is None:
+#             self.get_logger().error("No current joint state received yet. Cannot calculate trajectory.")
+#             return
+
+#         start_pos = list(self.current_joint_state.position)
+#         start_orn = list(self.current_joint_state.orientation)
+#         start_orientation = R.from_quat(start_orn)
+
+#         # Convertir las posiciones a índices en la grilla
+#         start_idx = world_to_grid(*start_pos, self.x_vals, self.y_vals, self.z_vals)
+#         goal_idx = world_to_grid(*goal_pos, self.x_vals, self.y_vals, self.z_vals)
+
+#         # Crear el mapa de ocupación y dilatar los obstáculos
+#         occupancy_grid = np.zeros(self.grid_shape, dtype=np.uint8)
+
+#         # Aplicar dilatación a los obstáculos
+#         occupancy_grid_dilated = dilate_obstacles(occupancy_grid, dilation_distance=0.4, x_vals=self.x_vals)
+
+#         # Planificar la ruta entre el punto de inicio y el goal
+#         path = find_path(occupancy_grid_dilated, start_idx, goal_idx)
+#         if not path:
+#             self.get_logger().warn("No path found!")
+#             return
+
+#         # Convertir la ruta a coordenadas del mundo
+#         path_world = [grid_to_world(i, j, k, self.x_vals, self.y_vals, self.z_vals) for i, j, k in path]
+
+#         # Interpolar orientaciones a lo largo de la ruta
+#         key_rots = R.from_quat([start_orientation.as_quat(), goal_orientation.as_quat()])
+#         key_times = [0, 1]
+#         slerp = Slerp(key_times, key_rots)
+#         times = np.linspace(0, 1, len(path))
+#         interp_rots = slerp(times)
+#         interp_rot_matrices = interp_rots.as_matrix()
+
+#         # Resolver la cinemática inversa para cada paso de la ruta
+#         all_joint_values = []
+#         q_current = closed_form_algorithm(create_pose_matrix(path_world[0], interp_rot_matrices[0]), home_position=[0.0, -1.2, -2.3, -1.2, 1.57, 0.0])
+#         all_joint_values.append(q_current)
+
+#         for i in range(1, len(path_world)):
+#             T = create_pose_matrix(path_world[i], interp_rot_matrices[i])
+#             q_new = closed_form_algorithm(T, q_current, type=0)
+#             all_joint_values.append(q_new)
+#             q_current = q_new
+
+#         # Publicar las posiciones de las juntas paso a paso
+#         for i, q in enumerate(all_joint_values):
+#             msg = JointState()
+#             msg.name = [f'joint_{j+1}' for j in range(len(q))]
+#             msg.position = q.tolist()
+#             msg.header.stamp = self.get_clock().now().to_msg()
+#             self.joint_pub.publish(msg)
+#             self.get_logger().info(f"Published step {i}: {np.round(q, 3)}")
+#             time.sleep(0.1)  # Simular un tiempo de ejecución (10 Hz)
+
+#         # Publicar la trayectoria calculada
+#         traj_msg = JointTrajectory()
+#         traj_msg.joint_names = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint']
+#         for q in all_joint_values:
+#             point = JointTrajectoryPoint()
+#             point.positions = q.tolist()
+#             traj_msg.points.append(point)
+
+#         self.trajectory_pub.publish(traj_msg)
+#         self.get_logger().info("Trajectory execution complete.")
+
+#     def execute_trajectory(self, goal_handle):
+#         """Maneja la ejecución de la trayectoria recibida"""
+#         goal = goal_handle.request
+#         self.get_logger().info(f"Executing goal with {len(goal.trajectory.points)} points.")
+#         self.plan_and_send_trajectory(goal)
+#         goal_handle.succeed()
+
+# def create_pose_matrix(position, rotation_matrix):
+#     """Helper to create 4x4 transformation matrix from position and rotation matrix."""
+#     T = np.eye(4)
+#     T[:3, :3] = rotation_matrix
+#     T[:3, 3] = position
+#     return T
+
+# def main(args=None):
+#     rclpy.init(args=args)
+#     planner_node = PlannerNode()
+#     try:
+#         rclpy.spin(planner_node)
+#     except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
+#         print("Keyboard interrupt received. Shutting down planner node.")
+#     except Exception as e:
+#         print(f"Unhandled exception: {e}")
+
+# if __name__ == '__main__':
+#     main()
+
+
+
+
