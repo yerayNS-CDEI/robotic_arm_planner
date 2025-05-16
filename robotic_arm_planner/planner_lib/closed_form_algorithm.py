@@ -158,18 +158,43 @@ def closed_form_algorithm(goal_matrix, q_current, type):
         ### Step 6 - Solution with the minimal difference with respect to the current joint positions.
         # print("Solutions found are: \n",sol)
         weights = np.ones(6)
-        # diffs = np.array([np.sqrt(np.sum(weights * np.abs(q_current - sol[i]))) if not np.isnan(sol[i, 0]) else np.inf for i in range(8)])
-        # idx = np.argmin(diffs)
-        # return sol[idx]
+        # weights = []
+        
+        def normalize_angle_pi(angle):
+            return (angle + np.pi) % (2 * np.pi) - np.pi
+        
+        def normalize_angle_2pi(angle):
+            # return (angle + np.pi) % (2 * np.pi) - np.pi
+            return (angle + 2*np.pi) % (4 * np.pi) - 2 * np.pi
+        
+        def unwrap_angles(q_new, q_ref):
+            q_new = np.asarray(q_new).flatten()
+            q_ref = np.asarray(q_ref).flatten()
+            q_unwrapped = np.zeros_like(q_new)
+            for i in range(len(q_new)):
+                delta = q_new[i] - q_ref[i]
+                if delta > np.pi:
+                    q_unwrapped[i] = q_new[i] - 2 * np.pi
+                elif delta < -np.pi:
+                    q_unwrapped[i] = q_new[i] + 2 * np.pi
+                else:
+                    q_unwrapped[i] = q_new[i]
+            return q_unwrapped
+
+        print('All solutions: ',sol)
         valid_rows = ~np.isnan(sol).any(axis=1)  # Fila válida si no hay ningún nan
         if np.any(valid_rows):
             diffs = np.array([
-                np.sqrt(np.sum(weights * np.abs(q_current - sol[i])))
+                np.sqrt(np.sum(weights * np.abs(np.arctan2(np.sin(q_current - sol[i]), np.cos(q_current - sol[i])))))
                 for i in range(8) if valid_rows[i]
             ])
             idx_valid = np.where(valid_rows)[0]
             idx = idx_valid[np.argmin(diffs)]
-            return sol[idx]
+            best_sol = sol[idx]
+            best_sol = unwrap_angles(best_sol, q_current)
+            best_sol = np.array([normalize_angle_2pi(angle) for angle in best_sol])
+
+            return best_sol
         else:
             print('No feasible solution found!')
             return np.full(6, np.nan)  # No soluciones válidas encontradas

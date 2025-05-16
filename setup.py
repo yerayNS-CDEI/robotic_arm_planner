@@ -9,7 +9,7 @@ setup(
     data_files=[
         ('share/' + package_name, ['package.xml']),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools','numpy','scipy','matplotlib'],
     zip_safe=True,
     maintainer='Yeray',
     maintainer_email='ynavarro@cdei.upc.edu',
@@ -19,6 +19,7 @@ setup(
     entry_points={
         'console_scripts': [
             'planner_node = robotic_arm_planner.planner_node:main',
+            'base_placement_node = robotic_arm_planner.base_placement_node:main',
         ],
     },
 )

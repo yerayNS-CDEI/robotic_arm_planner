@@ -9,6 +9,7 @@ from geometry_msgs.msg import Pose
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from std_msgs.msg import Float64MultiArray
 
 import numpy as np
 
@@ -46,6 +47,8 @@ class PlannerNode(Node):
         self.goal_queue = []
         self.current_joint_state = None
         self.emergency_stop = False
+        self.end_effector_pose = None
+        self.i = 0
 
         # Create grid space
         self.resolution = 2*self.radius / self.grid_size
@@ -61,13 +64,18 @@ class PlannerNode(Node):
         self.create_subscription(Pose, '/goal_pose', self.goal_callback, 10)
         self.create_subscription(JointState, "/joint_states", self.joint_state_callback, 10)
         self.create_subscription(Bool, "/execution_status", self.execution_status_callback, 10)  # Nueva suscripción
+        self.create_subscription(Pose, "/end_effector_pose", self.end_effector_pose_callback, 10)
         self.joint_pub = self.create_publisher(JointState, '/planned_joint_states', 10)
         self.trajectory_pub = self.create_publisher(JointTrajectory, '/planned_trajectory', 10)
+        self.joint_values = self.create_publisher(Float64MultiArray, '/joint_values_topic', 10)
 
         self.get_logger().info("Planner node initialized and waiting for goal poses...")
 
     def joint_state_callback(self, msg):
         self.current_joint_state = msg
+
+    def end_effector_pose_callback(self, msg):
+        self.end_effector_pose = msg
 
     def execution_status_callback(self, msg: Bool):
         """Callback que recibe el estado de ejecución"""
@@ -106,14 +114,15 @@ class PlannerNode(Node):
         self.get_logger().info(f"Received goal pose: {goal_pos}")
 
         # Example start position (NEEDS TO be parameterized)
-        if True:
-            start_pos = [-0.25, 0.6, 0.2]
-            start_orientation = R.from_euler('xyz', [60, 120, 150], degrees=True)
-        else:
+        # if self.i == 0:
+        #     start_pos = [-0.25, 0.6, 0.2]
+        #     start_orientation = R.from_euler('xyz', [60, 120, 150], degrees=True)
+        #     self.i += 1
+        # else:
             # Obtenemos la posición actual del robot desde JointState
-            start_pos = list(self.current_joint_state.position)
-            start_orn = list(self.current_joint_state.orientation)
-            start_orientation = R.from_quat(start_orn)
+        start_pos = [self.end_effector_pose.position.x, self.end_effector_pose.position.y, self.end_effector_pose.position.z]
+        start_orn = [self.end_effector_pose.orientation.x, self.end_effector_pose.orientation.y, self.end_effector_pose.orientation.z, self.end_effector_pose.orientation.w]
+        start_orientation = R.from_quat(start_orn)
             
         try:
             start_idx = world_to_grid(*start_pos, self.x_vals, self.y_vals, self.z_vals)
@@ -180,9 +189,12 @@ class PlannerNode(Node):
         print("Interpolated Euler angles:\n", interpolated_euler_angles)
 
         # Plan joint values
-        home_position = np.array([0.0, -1.2, -2.3, -1.2, 1.57, 0.0])
+        # home_position = np.array([0.0, -1.2, -2.3, -1.2, 1.57, 0.0])
+        home_position = np.array([self.current_joint_state.position])
         all_joint_values = []
-        q_current = closed_form_algorithm(create_pose_matrix(path_world[0], interp_rot_matrices[0]), home_position, type=0)
+        # q_current = closed_form_algorithm(create_pose_matrix(path_world[0], interp_rot_matrices[0]), home_position, type=0)
+        q_current = np.array([self.current_joint_state.position[-1], self.current_joint_state.position[0], self.current_joint_state.position[1], self.current_joint_state.position[2], self.current_joint_state.position[3], self.current_joint_state.position[4]])
+        self.get_logger().error(f"Current joint state = {self.current_joint_state.position}")
         all_joint_values.append(q_current)
 
         for i in range(1, len(path_world)):
@@ -193,6 +205,12 @@ class PlannerNode(Node):
             if np.any(np.isnan(q_new)):
                 self.get_logger().error(f"Invalid IK at step {i}: pose = {T[:3, 3]}. Path wolrd = {path_world[i]}")
                 self.emergency_stop = True 
+
+        self.get_logger().info(f"Joint values: {all_joint_values}")
+        joints_msg = Float64MultiArray()
+        flat_values = [item for sublist in all_joint_values for item in sublist]
+        joints_msg.data = flat_values
+        self.joint_values.publish(joints_msg)
 
         # Publish joint values step-by-step (POSIBLE ELIMINACION DE CODIGO PARA COMPACTACION)
         for i, q in enumerate(all_joint_values):
@@ -222,13 +240,13 @@ class PlannerNode(Node):
             'wrist_3_joint'
         ]
 
-        if self.current_joint_state is not None:
-            first_point = JointTrajectoryPoint()
-            first_point.positions = list(self.current_joint_state.position)
-            first_point.time_from_start = rclpy.duration.Duration(seconds=0.1).to_msg()
-            traj_msg.points.append(first_point)
+        # if self.current_joint_state is not None:
+        #     first_point = JointTrajectoryPoint()
+        #     first_point.positions = list(self.current_joint_state.position)
+        #     first_point.time_from_start = rclpy.duration.Duration(seconds=0.1).to_msg()
+        #     traj_msg.points.append(first_point)
 
-        time_from_start = 5.0  # el primer punto ya es 0.1, así que empieza desde 1.0
+        time_from_start = 1.0  # el primer punto ya es 0.1, así que empieza desde 1.0
 
         for q in all_joint_values:
             point = JointTrajectoryPoint()
