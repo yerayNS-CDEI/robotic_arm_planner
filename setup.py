@@ -7,6 +7,7 @@ setup(
     version='0.0.0',
     packages=find_packages(include=['robotic_arm_planner', 'robotic_arm_planner.*']),
     data_files=[
+    	('share/ament_index/resource_index/packages', ['resource/robotic_arm_planner']),
         ('share/' + package_name, ['package.xml']),
     ],
     install_requires=['setuptools','numpy','scipy','matplotlib'],
