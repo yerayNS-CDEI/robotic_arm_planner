@@ -7,7 +7,9 @@ import numpy as np
 import pickle
 import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as R
-from std_msgs.msg import String
+from robotic_arm_planner_interfaces.srv import ComputeBasePlacement
+from geometry_msgs.msg import Pose
+
 
 class BasePlacementNode(Node):
     def __init__(self):
@@ -20,6 +22,11 @@ class BasePlacementNode(Node):
         self.declare_parameter('global_size', 4.0)
         self.declare_parameter('cart_min', -1.6)
 
+        self.cart_step = self.get_parameter('cart_step').value
+        self.global_size = self.get_parameter('global_size').value
+        self.area_size = self.get_parameter('area_size').value
+        self.cart_min = self.get_parameter('cart_min').value
+
         self.base_path = os.path.join(os.path.expanduser('~'), 'ws_reachability', 'rm4d', 'experiment_scripts')
 
         # Cargar base de datos
@@ -28,61 +35,100 @@ class BasePlacementNode(Node):
             orientations_path=os.path.join(self.base_path, "orientations.pkl")
         )
 
-        # # Crear un timer para actualizar la selección de la base en intervalos regulares
-        # self.timer = self.create_timer(1.0, self.timer_callback)  # 1 segundo
+        # self.get_logger().info(f"Some db keys: {list(self.db.keys())[:5]}")
+        # self.get_logger().info(f"Example db content: {self.db[list(self.db.keys())[0]]}")
 
-        # Objetivos de ejemplo (esto puede recibir entradas de otros nodos)
-        self.example_targets = [
-            (np.array([1.7, 1.6, 0.8]), R.from_euler('xyz', [0, 90, 0], degrees=True).as_matrix()),
-            (np.array([1.7, 2.0, 0.8]), R.from_euler('xyz', [0, 90, 0], degrees=True).as_matrix()),
-            (np.array([1.7, 1.6, 0.3]), R.from_euler('xyz', [0, 90, 0], degrees=True).as_matrix()),
-            (np.array([1.7, 2.0, 0.3]), R.from_euler('xyz', [0, 90, 0], degrees=True).as_matrix())
-        ]
+        self.srv = self.create_service(ComputeBasePlacement, 'compute_base_placement', self.computeBasePlacementCallback)
+        self.get_logger().info("Service 'compute_base_placement' ready.")
+        
+        # # Objetivos de ejemplo (esto puede recibir entradas de otros nodos)
+        # self.example_targets = [
+        #     (np.array([1.7, 1.6, 0.8]), R.from_euler('xyz', [0, 90, 0], degrees=True).as_matrix()),
+        #     (np.array([1.7, 2.0, 0.8]), R.from_euler('xyz', [0, 90, 0], degrees=True).as_matrix()),
+        #     (np.array([1.7, 1.6, 0.3]), R.from_euler('xyz', [0, 90, 0], degrees=True).as_matrix()),
+        #     (np.array([1.7, 2.0, 0.3]), R.from_euler('xyz', [0, 90, 0], degrees=True).as_matrix())
+        # ]
 
-        # Crear grid global
-        x_vals, y_vals, _, _ = self.define_global_grid(self.example_targets, cart_step=self.get_parameter('cart_step').value, global_size=self.get_parameter('global_size').value)
+    def computeBasePlacementCallback(self, request, response):
+        try:
+            # Convertir poses ROS2 a formato interno (pos, rot matrix)
+            example_targets = []
+            for pose in request.targets:
+                pos = np.array([pose.position.x, pose.position.y, pose.position.z])
+                quat = [pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w]
+                rot = R.from_quat(quat).as_matrix()
+                example_targets.append((pos, rot))
 
-        # Crear máscara de obstáculos
-        occupancy_map = np.ones((len(y_vals), len(x_vals)), dtype=np.uint8)
-        occupancy_map = self.add_obstacle_by_coords(occupancy_map, x_vals, y_vals, x_min=0.5, y_min=0.5, x_max=1.5, y_max=3.0)
+            # Crear grid global
+            x_vals, y_vals, _, _ = self.define_global_grid(example_targets, cart_step=self.cart_step, global_size=self.global_size)
 
-        # Evaluar posiciones de base sobre el grid
-        union_map, intersection_map = self.evaluate_base_positions_on_grid(
-            self.example_targets, self.db, self.orientations,
-            x_vals, y_vals,
-            cart_step=self.get_parameter('cart_step').value,
-            area_size=self.get_parameter('area_size').value,
-            cart_min=self.get_parameter('cart_min').value,
-            occupancy_map=occupancy_map
-        )
+            # Crear máscara de obstáculos
+            occupancy_map = np.ones((len(y_vals), len(x_vals)), dtype=np.uint8)
+            occupancy_map = self.add_obstacle_by_coords(occupancy_map, x_vals, y_vals, x_min=0.5, y_min=0.5, x_max=1.5, y_max=3.0)
 
-        # Visualizar resultados
-        self.plot_score_map(union_map, x_vals, y_vals, title='Mapa de unión con obstáculos', ee_targets=self.example_targets, occupancy_map=occupancy_map)
+            # Evaluar posiciones de base sobre el grid
+            union_map, intersection_map = self.evaluate_base_positions_on_grid(
+                example_targets, self.db, self.orientations,
+                x_vals, y_vals,
+                cart_step=self.cart_step,
+                area_size=self.area_size,
+                cart_min=self.cart_min,
+                occupancy_map=occupancy_map
+            )
 
-        # Obtener mejores bases por score
-        top_union, max_score_union = self.get_top_bases(intersection_map, x_vals, y_vals, top_n=2)
-        self.get_logger().info(f"\nMejores bases encontradas (score máximo = {int(max_score_union)}):")
-        for i, (x, y) in enumerate(top_union[:2]):
-            self.get_logger().info(f"B{i+1} → x: {x:.3f} m, y: {y:.3f} m")
+            # # Visualizar resultados
+            # self.plot_score_map(union_map, x_vals, y_vals, title='Mapa de unión con obstáculos', ee_targets=self.example_targets, occupancy_map=occupancy_map)
 
-        # Base óptima por centrado y distancia
-        optimal_base, optimal_score = self.select_optimal_base(intersection_map, x_vals, y_vals,
-                                                        self.example_targets,
-                                                        min_distance=0.5,
-                                                        perpendicular_tol=0.1)
-        if optimal_base:
-            self.get_logger().info(f"\nBase óptima seleccionada:")
-            self.get_logger().info(f"→ x: {optimal_base[0]:.3f} m, y: {optimal_base[1]:.3f} m")
-        else:
-            self.get_logger().info("[ERROR] No se encontró ninguna base que cumpla el umbral mínimo de distancia.")
+            # Obtener mejores bases por score
+            top_union, max_score_union = self.get_top_bases(intersection_map, x_vals, y_vals, top_n=2)
+            # self.get_logger().info(f"\nMejores bases encontradas (score máximo = {int(max_score_union)}):")
+            # for i, (x, y) in enumerate(top_union[:2]):
+            #     self.get_logger().info(f"B{i+1} → x: {x:.3f} m, y: {y:.3f} m")
 
-        # Visualizar base óptima
-        self.plot_score_map(intersection_map, x_vals, y_vals,
-                    title='Mapa de intersección con obstaculos y con base óptima personalizada',
-                    ee_targets=self.example_targets,
-                    top_bases=[optimal_base] if optimal_base else None,
-                    occupancy_map=occupancy_map)
+            # Base óptima por centrado y distancia
+            optimal_base, optimal_score = self.select_optimal_base(intersection_map, x_vals, y_vals,
+                                                                example_targets,
+                                                                min_distance=0.5,
+                                                                perpendicular_tol=0.1)
+            
+            # if optimal_base:
+            #     self.get_logger().info(f"\nBase óptima seleccionada:")
+            #     self.get_logger().info(f"→ x: {optimal_base[0]:.3f} m, y: {optimal_base[1]:.3f} m")
+            # else:
+            #     self.get_logger().info("[ERROR] No se encontró ninguna base que cumpla el umbral mínimo de distancia.")
+
+            # # Visualizar base óptima
+            # self.plot_score_map(intersection_map, x_vals, y_vals,
+            #             title='Mapa de intersección con obstaculos y con base óptima personalizada',
+            #             ee_targets=self.example_targets,
+            #             top_bases=[optimal_base] if optimal_base else None,
+            #             occupancy_map=occupancy_map)
     
+            # Convertir resultados a geometry_msgs/Pose[]
+            response.best_bases = []
+            for x, y in top_union[:2]:
+                pose = Pose()
+                pose.position.x = float(x)
+                pose.position.y = float(y)
+                pose.position.z = 0.0
+                pose.orientation.x = 0.0
+                pose.orientation.y = 0.0
+                pose.orientation.z = 0.0
+                pose.orientation.w = 1.0
+                response.best_bases.append(pose)
+
+            response.success = True
+            response.message = f"Computed top {len(response.best_bases)} bases with max score {int(max_score_union)}."
+
+            self.get_logger().info(response.message)
+
+        except Exception as e:
+            response.success = False
+            response.message = f"Error during base placement computation: {str(e)}"
+            self.get_logger().error(response.message)
+
+        return response
+
     ## Funciones auxiliares
 
     def load_database(self, db_path, orientations_path):
@@ -97,18 +143,6 @@ class BasePlacementNode(Node):
             orientations = pickle.load(f)
             self.get_logger().info('[INFO] Orientations loaded.')
         return db, orientations
-
-    # def timer_callback(self):
-    #     # Aquí se realizaría la evaluación en un ciclo
-    #     ee_targets = [
-    #         (np.array([1.7, 1.6, 0.8]), R.from_euler('xyz', [0, 90, 0], degrees=True).as_matrix()),
-    #         (np.array([1.7, 2.0, 0.8]), R.from_euler('xyz', [0, 90, 0], degrees=True).as_matrix())
-    #     ]
-    #     # Evaluar base
-    #     union_map, intersection_map, x_vals, y_vals = self.evaluate_base_positions_global(ee_targets)
-
-    #     # Aquí puedes agregar más lógica para publicar resultados
-    #     self.plot_score_map(union_map, x_vals, y_vals)
     
     def orientation_similarity(self, o1, o2):
         z1 = R.from_matrix(o1).apply([0, 0, 1])
@@ -168,22 +202,28 @@ class BasePlacementNode(Node):
                     base_pos = np.array([x_vals[j], y_vals[i], 0.0])
                     rel_pos = ee_pos[:3] - base_pos
                     voxel_idx = tuple(np.round((rel_pos - (cart_min + cart_step / 2)) / cart_step).astype(int))
+                    
+                    # print(f"voxel_idx: {voxel_idx}, rel_pos: {rel_pos}, base_pos: {base_pos}")
 
                     if all(v >= 0 for v in voxel_idx) and voxel_idx in db:
                         similar_orients = self.find_similar_orientations(ee_rot, orientations)
+                        # print(f"similar_orients indices count: {len(similar_orients)}")
                         score = sum(len(db[voxel_idx].get(idx, [])) for idx in similar_orients)
                         union_map[i, j] += score
-                        if np.max(union_map) == 0:
-                            self.get_logger().error("[ERROR] El mapa de unión está vacío. Verifica el umbral de orientación o la base de datos.")
                         if score > 0:
                             local_votes[i, j] = 1
 
             intersection_votes += local_votes
 
         intersection_map = np.where(intersection_votes == len(ee_targets), union_map, 0)
+
+        if np.max(union_map) == 0:
+            print("[ERROR] El mapa de unión está vacío. Verifica el umbral de orientación o la base de datos.")
+        if np.max(intersection_map) == 0:
+            print("[ERROR] El mapa de intersección está vacío. Verifica el umbral de orientación o la base de datos.")
         return union_map, intersection_map
     
-    def get_top_bases(score_map, x_vals, y_vals, top_n=5):
+    def get_top_bases(self, score_map, x_vals, y_vals, top_n=5):
         flat = score_map.ravel()
         indices = np.argsort(flat)[::-1]
         coords = []
@@ -196,7 +236,7 @@ class BasePlacementNode(Node):
                 coords.append((x_vals[j], y_vals[i]))
         return coords, max_score
 
-    def select_optimal_base(score_map, x_vals, y_vals, ee_targets, min_distance=0.3, perpendicular_tol=0.025):
+    def select_optimal_base(self, score_map, x_vals, y_vals, ee_targets, min_distance=0.3, perpendicular_tol=0.025):
         max_score = np.max(score_map)
         candidates = np.argwhere(score_map == max_score)
 
@@ -259,7 +299,7 @@ class BasePlacementNode(Node):
         plt.ylabel('Y (m)')
         plt.grid(True)
         plt.tight_layout()
-        plt.show(block=False)
+        plt.show()
 
 def main(args=None):
     rclpy.init(args=args)

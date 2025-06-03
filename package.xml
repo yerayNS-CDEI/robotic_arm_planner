@@ -14,6 +14,7 @@
   <depend>geometry_msgs</depend>
   <depend>urdf_parser_py</depend>
   <depend>joint_state_publisher_gui</depend>
+  <depend>robotic_arm_planner_interfaces</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
