@@ -38,6 +38,7 @@ class BasePlacementNode(Node):
         # self.get_logger().info(f"Some db keys: {list(self.db.keys())[:5]}")
         # self.get_logger().info(f"Example db content: {self.db[list(self.db.keys())[0]]}")
 
+        # Configuring service
         self.srv = self.create_service(ComputeBasePlacement, 'compute_base_placement', self.computeBasePlacementCallback)
         self.get_logger().info("Service 'compute_base_placement' ready.")
         
@@ -49,8 +50,34 @@ class BasePlacementNode(Node):
         #     (np.array([1.7, 2.0, 0.3]), R.from_euler('xyz', [0, 90, 0], degrees=True).as_matrix())
         # ]
 
+        # ros2 service call /compute_base_placement robotic_arm_planner_interfaces/srv/ComputeBasePlacement "targets:
+        # - position: {x: 1.7, y: 1.6, z: 0.8}
+        # orientation: {x: 0.0, y: 0.7071, z: 0.0, w: 0.7071}
+        # - position: {x: 1.7, y: 2.0, z: 0.8}
+        # orientation: {x: 0.0, y: 0.7071, z: 0.0, w: 0.7071}
+        # - position: {x: 1.7, y: 1.6, z: 0.3}
+        # orientation: {x: 0.0, y: 0.7071, z: 0.0, w: 0.7071}
+        # - position: {x: 1.7, y: 2.0, z: 0.3}
+        # orientation: {x: 0.0, y: 0.7071, z: 0.0, w: 0.7071}"
+
+    def cleanup(self):
+        """Cleanup function to free memory from the databases loaded."""
+        self.get_logger().info("Cleaning up resources...")
+        if hasattr(self, 'db'):
+            self.db.clear()
+            del self.db
+        if hasattr(self, 'orientations'):
+            del self.orientations
+        self.get_logger().info("Resources successfully released.")
+
     def computeBasePlacementCallback(self, request, response):
         try:
+            if not request.targets:
+                response.success = False
+                response.message = "[ERROR] No targets received in request."
+                self.get_logger().error(response.message)
+                return response
+
             # Convertir poses ROS2 a formato interno (pos, rot matrix)
             example_targets = []
             for pose in request.targets:
@@ -65,6 +92,7 @@ class BasePlacementNode(Node):
             # Crear máscara de obstáculos
             occupancy_map = np.ones((len(y_vals), len(x_vals)), dtype=np.uint8)
             occupancy_map = self.add_obstacle_by_coords(occupancy_map, x_vals, y_vals, x_min=0.5, y_min=0.5, x_max=1.5, y_max=3.0)
+            occupancy_map = self.add_obstacle_by_coords(occupancy_map, x_vals, y_vals, x_min=1.5, y_min=1.5, x_max=2.0, y_max=2.0)
 
             # Evaluar posiciones de base sobre el grid
             union_map, intersection_map = self.evaluate_base_positions_on_grid(
@@ -77,10 +105,10 @@ class BasePlacementNode(Node):
             )
 
             # # Visualizar resultados
-            # self.plot_score_map(union_map, x_vals, y_vals, title='Mapa de unión con obstáculos', ee_targets=self.example_targets, occupancy_map=occupancy_map)
+            self.plot_score_map(union_map, x_vals, y_vals, title='Mapa de unión con obstáculos', ee_targets=example_targets, occupancy_map=occupancy_map)
 
             # Obtener mejores bases por score
-            top_union, max_score_union = self.get_top_bases(intersection_map, x_vals, y_vals, top_n=2)
+            # top_union, max_score_union = self.get_top_bases(intersection_map, x_vals, y_vals, top_n=2)
             # self.get_logger().info(f"\nMejores bases encontradas (score máximo = {int(max_score_union)}):")
             # for i, (x, y) in enumerate(top_union[:2]):
             #     self.get_logger().info(f"B{i+1} → x: {x:.3f} m, y: {y:.3f} m")
@@ -91,34 +119,38 @@ class BasePlacementNode(Node):
                                                                 min_distance=0.5,
                                                                 perpendicular_tol=0.1)
             
+            if optimal_base is None or np.any(np.isnan(optimal_base)):
+                response.success = False
+                response.message = "[ERROR] No valid base position found."
+                self.get_logger().error(response.message)
+                return response
+            
             # if optimal_base:
             #     self.get_logger().info(f"\nBase óptima seleccionada:")
             #     self.get_logger().info(f"→ x: {optimal_base[0]:.3f} m, y: {optimal_base[1]:.3f} m")
             # else:
             #     self.get_logger().info("[ERROR] No se encontró ninguna base que cumpla el umbral mínimo de distancia.")
 
-            # # Visualizar base óptima
-            # self.plot_score_map(intersection_map, x_vals, y_vals,
-            #             title='Mapa de intersección con obstaculos y con base óptima personalizada',
-            #             ee_targets=self.example_targets,
-            #             top_bases=[optimal_base] if optimal_base else None,
-            #             occupancy_map=occupancy_map)
+            # Visualizar base óptima
+            self.plot_score_map(intersection_map, x_vals, y_vals,
+                        title='Mapa de intersección con obstaculos y con base óptima personalizada',
+                        ee_targets=example_targets,
+                        top_bases=[optimal_base] if optimal_base else None,
+                        occupancy_map=occupancy_map)
     
-            # Convertir resultados a geometry_msgs/Pose[]
-            response.best_bases = []
-            for x, y in top_union[:2]:
-                pose = Pose()
-                pose.position.x = float(x)
-                pose.position.y = float(y)
-                pose.position.z = 0.0
-                pose.orientation.x = 0.0
-                pose.orientation.y = 0.0
-                pose.orientation.z = 0.0
-                pose.orientation.w = 1.0
-                response.best_bases.append(pose)
-
+            # Convertir resultado a geometry_msgs/Pose
+            pose = Pose()
+            pose.position.x = float(optimal_base[0])  # Asignar las coordenadas de la base
+            pose.position.y = float(optimal_base[1])
+            pose.position.z = 0.0  # Puedes ajustar esto según tu necesidad
+            pose.orientation = request.targets[0].orientation
+            
+            response.best_base = pose
             response.success = True
-            response.message = f"Computed top {len(response.best_bases)} bases with max score {int(max_score_union)}."
+            response.message = (
+                f"Computed optimal base with min distance and centering rules. "
+                f"Best base calculated: (x: {pose.position.x:.2f}, y: {pose.position.y:.2f})"
+            )
 
             self.get_logger().info(response.message)
 
@@ -304,8 +336,16 @@ class BasePlacementNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = BasePlacementNode()
-    rclpy.spin(node)
-    rclpy.shutdown()
+
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        node.get_logger().info("Shutting down node due to keyboard interrupt (Ctrl+C)")
+        node.cleanup()
+    finally:
+        if rclpy.ok():
+            rclpy.shutdown()
+        node.destroy_node()
 
 if __name__ == '__main__':
     main()
