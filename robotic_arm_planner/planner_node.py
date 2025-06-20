@@ -32,11 +32,10 @@ class PlannerNode(Node):
         base_home = os.path.expanduser('~')
         self.reachability_map_fn = os.path.join(
             base_home,
-            'ws_reachability',
-            'rm4d',
-            'experiment_scripts',
-            'data',
-            f'eval_poses_{self.robot_name}',
+            'ws_Robotic_Arm',
+            'src',
+            'robotic_arm_planner',
+            'resource',
             fn_npy
         )
         self.get_logger().info(f"Loading reachability map from: {self.reachability_map_fn}")
