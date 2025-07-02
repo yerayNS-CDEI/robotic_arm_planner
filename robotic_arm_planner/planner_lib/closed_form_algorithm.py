@@ -181,7 +181,7 @@ def closed_form_algorithm(goal_matrix, q_current, type):
                     q_unwrapped[i] = q_new[i]
             return q_unwrapped
 
-        print('All solutions: ',sol)
+        # print('All solutions: ',sol)
         valid_rows = ~np.isnan(sol).any(axis=1)  # Fila válida si no hay ningún nan
         if np.any(valid_rows):
             diffs = np.array([

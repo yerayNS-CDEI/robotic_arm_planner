@@ -9,7 +9,7 @@ from geometry_msgs.msg import Pose
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-from std_msgs.msg import Float64MultiArray
+# from std_msgs.msg import Float64MultiArray
 
 import numpy as np
 
@@ -64,9 +64,9 @@ class PlannerNode(Node):
         self.create_subscription(JointState, "/joint_states", self.joint_state_callback, 10)
         self.create_subscription(Bool, "/execution_status", self.execution_status_callback, 10)  # Nueva suscripción
         self.create_subscription(Pose, "/end_effector_pose", self.end_effector_pose_callback, 10)
-        self.joint_pub = self.create_publisher(JointState, '/planned_joint_states', 10)
+        # self.joint_pub = self.create_publisher(JointState, '/planned_joint_states', 10)
         self.trajectory_pub = self.create_publisher(JointTrajectory, '/planned_trajectory', 10)
-        self.joint_values = self.create_publisher(Float64MultiArray, '/joint_values_topic', 10)
+        # self.joint_values = self.create_publisher(Float64MultiArray, '/joint_values_topic', 10)
 
         self.get_logger().info("Planner node initialized and waiting for goal poses...")
 
@@ -110,7 +110,8 @@ class PlannerNode(Node):
         goal_orn = [msg.orientation.x,msg.orientation.y,msg.orientation.z,msg.orientation.w]
         goal_orientation = R.from_quat(goal_orn)
         # goal_orientation = R.from_euler('xyz', [0, -90, 0], degrees=True)
-        self.get_logger().info(f"Received goal pose: {goal_pos}")
+        self.get_logger().info(f"Received goal position: {goal_pos}")
+        self.get_logger().info(f"Received goal orientation: {goal_orn}")
 
         # Example start position (NEEDS TO be parameterized)
         # if self.i == 0:
@@ -118,7 +119,8 @@ class PlannerNode(Node):
         #     start_orientation = R.from_euler('xyz', [60, 120, 150], degrees=True)
         #     self.i += 1
         # else:
-            # Obtenemos la posición actual del robot desde JointState
+        
+        # Obtenemos la posición actual del robot desde JointState
         start_pos = [self.end_effector_pose.position.x, self.end_effector_pose.position.y, self.end_effector_pose.position.z]
         start_orn = [self.end_effector_pose.orientation.x, self.end_effector_pose.orientation.y, self.end_effector_pose.orientation.z, self.end_effector_pose.orientation.w]
         start_orientation = R.from_quat(start_orn)
@@ -166,22 +168,33 @@ class PlannerNode(Node):
 
         # Apply dilation
         occupancy_grid_dilated = dilate_obstacles(occupancy_grid, dilation_distance, self.x_vals)
+        occupancy_grid_dilated = np.zeros(self.grid_shape, dtype=np.uint8)      # Eliminating all obstacles for now
 
         path = find_path(occupancy_grid_dilated, start_idx, goal_idx)
+        self.get_logger().info(f"Found path with length {len(path)}")
         if not path:
             self.get_logger().warn("No path found!")
             return
 
         # Convert path to world coordinates
         path_world = [grid_to_world(i, j, k, self.x_vals, self.y_vals, self.z_vals) for i, j, k in path]
-
+        
         # Interpolate orientations along the path
-        key_rots = R.from_quat([start_orientation.as_quat(), goal_orientation.as_quat()])
-        key_times = [0, 1]
-        slerp = Slerp(key_times, key_rots)
-        times = np.linspace(0, 1, len(path))
-        interp_rots = slerp(times)
-        interp_rot_matrices = interp_rots.as_matrix()
+        if len(path) == 1:
+            self.get_logger().info("Single-point path: rotating in place.")
+            N = 1   # N steps to rotate
+            if N == 1:
+                interp_rots = R.from_quat([goal_orientation.as_quat()])
+            else:
+                interp_rots = Slerp([0, 1], R.from_quat([start_orientation.as_quat(), goal_orientation.as_quat()]))(np.linspace(0, 1, N))
+            interp_rot_matrices = interp_rots.as_matrix()
+        else:        
+            key_rots = R.from_quat([start_orientation.as_quat(), goal_orientation.as_quat()])
+            key_times = [0, 1]
+            slerp = Slerp(key_times, key_rots)
+            times = np.linspace(0, 1, len(path))
+            interp_rots = slerp(times)
+            interp_rot_matrices = interp_rots.as_matrix()
 
         # Convert to Euler angles
         interpolated_euler_angles = interp_rots.as_euler('xyz', degrees=True)
@@ -191,35 +204,51 @@ class PlannerNode(Node):
         # home_position = np.array([0.0, -1.2, -2.3, -1.2, 1.57, 0.0])
         home_position = np.array([self.current_joint_state.position])
         all_joint_values = []
+        all_joint_values_print = []
         # q_current = closed_form_algorithm(create_pose_matrix(path_world[0], interp_rot_matrices[0]), home_position, type=0)
+        
+        # q_current = np.array([self.current_joint_state.position[-1], self.current_joint_state.position[0], self.current_joint_state.position[1], self.current_joint_state.position[2], self.current_joint_state.position[3], self.current_joint_state.position[4]])
+        # self.get_logger().error(f"Current joint state = {self.current_joint_state.position}")
+        # all_joint_values.append(q_current)
+
+        # for i in range(1, len(path_world)):
+        #     T = create_pose_matrix(path_world[i], interp_rot_matrices[i])
+        #     q_new = closed_form_algorithm(T, q_current, type=0)
+        #     all_joint_values.append(q_new)
+        #     q_current = q_new
+        #     if np.any(np.isnan(q_new)):
+        #         self.get_logger().error(f"Invalid IK at step {i}: pose = {T[:3, 3]}. Path wolrd = {path_world[i]}")
+        #         self.emergency_stop = True 
+
         q_current = np.array([self.current_joint_state.position[-1], self.current_joint_state.position[0], self.current_joint_state.position[1], self.current_joint_state.position[2], self.current_joint_state.position[3], self.current_joint_state.position[4]])
         self.get_logger().error(f"Current joint state = {self.current_joint_state.position}")
-        all_joint_values.append(q_current)
+        all_joint_values_print.append(q_current)
 
-        for i in range(1, len(path_world)):
+        for i in range(len(path_world)):
             T = create_pose_matrix(path_world[i], interp_rot_matrices[i])
             q_new = closed_form_algorithm(T, q_current, type=0)
-            all_joint_values.append(q_new)
-            q_current = q_new
             if np.any(np.isnan(q_new)):
                 self.get_logger().error(f"Invalid IK at step {i}: pose = {T[:3, 3]}. Path wolrd = {path_world[i]}")
                 self.emergency_stop = True 
+            all_joint_values.append(q_new)
+            all_joint_values_print.append(q_new)
+            q_current = q_new
 
-        self.get_logger().info(f"Joint values: {all_joint_values}")
-        joints_msg = Float64MultiArray()
-        flat_values = [item for sublist in all_joint_values for item in sublist]
-        joints_msg.data = flat_values
-        self.joint_values.publish(joints_msg)
+        self.get_logger().info(f"Joint values: {all_joint_values_print}")
+        # joints_msg = Float64MultiArray()
+        # flat_values = [item for sublist in all_joint_values_print for item in sublist]
+        # joints_msg.data = flat_values
+        # self.joint_values.publish(joints_msg)
 
         # Publish joint values step-by-step (POSIBLE ELIMINACION DE CODIGO PARA COMPACTACION)
-        for i, q in enumerate(all_joint_values):
-            msg = JointState()
-            msg.name = [f'joint_{j+1}' for j in range(len(q))]
-            msg.position = q.tolist()
-            msg.header.stamp = self.get_clock().now().to_msg()
-            self.joint_pub.publish(msg)
+        for i, q in enumerate(all_joint_values_print):
+            # msg = JointState()
+            # msg.name = [f'joint_{j+1}' for j in range(len(q))]
+            # msg.position = q.tolist()
+            # msg.header.stamp = self.get_clock().now().to_msg()
+            # self.joint_pub.publish(msg)
             self.get_logger().info(f"Published step {i}: {np.round(q, 3)}")
-            time.sleep(0.1)  # 10 Hz
+            # time.sleep(0.1)  # 10 Hz
 
         # Publish success
         self.get_logger().info("Joint planning published.")
